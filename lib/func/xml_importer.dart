@@ -3,167 +3,196 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:xml/xml.dart';
 import 'package:xml_converter/types/comprobante.dart'; // Asegúrate de importar el archivo correcto
+import 'package:archive/archive.dart';
 
-Future<Comprobante?> importXml() async {
+Future<List<Comprobante>?> importXml() async {
   FilePickerResult? result = await FilePicker.platform.pickFiles(
     type: FileType.custom,
-    allowedExtensions: ['xml'],
+    allowedExtensions: ['xml', '7z', 'zip', 'rar'],
+    allowMultiple: true,
   );
 
   if (result == null) return null;
 
-  String? filePath = result.files.single.path;
-  if (filePath == null) return null;
+  List<Comprobante> comprobantes = [];
 
-  File file = File(filePath);
-  String fileContent = await file.readAsString();
-  final XmlDocument document = XmlDocument.parse(fileContent);
+  for (var file in result.files) {
+    String? filePath = file.path;
+    if (filePath == null) continue;
 
-  // Encuentra el nodo 'cfdi:Comprobante'
-  final XmlElement cfdiComprobante =
-      document.findAllElements('cfdi:Comprobante').first;
-  final XmlElement cfdiEmisor = document.findAllElements('cfdi:Emisor').first;
-  final XmlElement cfdiReceptor =
-      document.findAllElements('cfdi:Receptor').first;
-  final XmlElement cfdiComplemento =
-      cfdiComprobante.findAllElements('cfdi:Complemento').first;
+    File fileToProcess = File(filePath);
+    String extension = filePath.split('.').last.toLowerCase();
 
+    if (['7z', 'zip', 'rar'].contains(extension)) {
+      // Procesar archivo comprimido
+      try {
+        List<int> bytes = await fileToProcess.readAsBytes();
+        Archive archive = ZipDecoder().decodeBytes(bytes);
+        
+        for (ArchiveFile archiveFile in archive) {
+          if (archiveFile.name.toLowerCase().endsWith('.xml')) {
+            String xmlContent = String.fromCharCodes(archiveFile.content);
+            await _procesarContenidoXml(xmlContent, comprobantes);
+          }
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('Error al procesar archivo comprimido: $e');
+        }
+        continue;
+      }
+    } else if (extension == 'xml') {
+      // Procesar archivo XML directamente
+      try {
+        String fileContent = await fileToProcess.readAsString();
+        await _procesarContenidoXml(fileContent, comprobantes);
+      } catch (e) {
+        if (kDebugMode) {
+          print('Error al procesar archivo XML: $e');
+        }
+        continue;
+      }
+    }
+  }
+
+  return comprobantes.isEmpty ? null : comprobantes;
+}
+
+Future<void> _procesarContenidoXml(String contenido, List<Comprobante> comprobantes) async {
   try {
-    // Extrae los atributos del nodo 'cfdi:Comprobante'
-    DateTime fecha =
-        DateTime.parse(cfdiComprobante.getAttribute('Fecha') ?? '');
+    final XmlDocument document = XmlDocument.parse(contenido);
+    Comprobante? comprobante = await _procesarXml(document);
+    if (comprobante != null) {
+      comprobantes.add(comprobante);
+    }
+  } catch (e) {
+    if (kDebugMode) {
+      print('Error al procesar contenido XML: $e');
+    }
+  }
+}
+
+Future<Comprobante?> _procesarXml(XmlDocument document) async {
+  try {
+    final XmlElement cfdiComprobante = document.findAllElements('cfdi:Comprobante').first;
+    final XmlElement cfdiEmisor = document.findAllElements('cfdi:Emisor').first;
+    final XmlElement cfdiReceptor = document.findAllElements('cfdi:Receptor').first;
+    final XmlElement cfdiComplemento = document.findAllElements('cfdi:Complemento').first;
+    final XmlElement timbreFiscal = cfdiComplemento.findAllElements('tfd:TimbreFiscalDigital').first;
+
+    // Extraer datos básicos del comprobante
     String serie = cfdiComprobante.getAttribute('Serie') ?? '';
     String folio = cfdiComprobante.getAttribute('Folio') ?? '';
-    String uuid = cfdiComplemento
-            .findElements('tfd:TimbreFiscalDigital')
-            .first
-            .getAttribute('UUID') ??
-        '';
+    DateTime fecha = DateTime.parse(cfdiComprobante.getAttribute('Fecha') ?? '');
+    String moneda = cfdiComprobante.getAttribute('Moneda') ?? '';
+    
+    // Datos del emisor y receptor
     String rfcEmisor = cfdiEmisor.getAttribute('Rfc') ?? '';
     String nombreEmisor = cfdiEmisor.getAttribute('Nombre') ?? '';
     String rfcReceptor = cfdiReceptor.getAttribute('Rfc') ?? '';
     String nombreReceptor = cfdiReceptor.getAttribute('Nombre') ?? '';
-    String moneda = cfdiComprobante.getAttribute('Moneda') ?? '';
+    
+    // UUID del timbre fiscal
+    String uuid = timbreFiscal.getAttribute('UUID') ?? '';
 
+    // Procesar conceptos
     List<Concepto> conceptos = [];
-    // Extrae los conceptos
-    final XmlElement conceptosNodes =
-        cfdiComprobante.findAllElements('cfdi:Conceptos').first;
-    final conceptoNodes = conceptosNodes.findAllElements('cfdi:Concepto');
-    for (var conceptoNode in conceptoNodes) {
-      String descripcion = conceptoNode.getAttribute('Descripcion') ?? '';
-      double subTotal =
-          double.tryParse(conceptoNode.getAttribute('Importe') ?? '') ?? 0.0;
-      double descuento =
-          double.tryParse(conceptoNode.getAttribute('Descuento') ?? '') ?? 0.0;
+    for (var conceptoXml in document.findAllElements('cfdi:Concepto')) {
+      List<TipoImpuesto> traslados = [];
+      List<TipoImpuesto> retenciones = [];
 
-      // Extrae impuestos de cada concepto
-      Impuesto impuestos = _extractImpuestos(conceptoNode);
+      // Procesar impuestos del concepto
+      var impuestosNode = conceptoXml.findElements('cfdi:Impuestos').firstOrNull;
+      if (impuestosNode != null) {
+        // Procesar traslados
+        var trasladosNode = impuestosNode.findElements('cfdi:Traslados').firstOrNull;
+        if (trasladosNode != null) {
+          for (var traslado in trasladosNode.findElements('cfdi:Traslado')) {
+            traslados.add(TipoImpuesto(
+              base: double.parse(traslado.getAttribute('Base') ?? '0'),
+              impuesto: traslado.getAttribute('Impuesto') ?? '',
+              tipoFactor: traslado.getAttribute('TipoFactor') ?? '',
+              tasaOCuota: double.parse(traslado.getAttribute('TasaOCuota') ?? '0'),
+              importe: double.parse(traslado.getAttribute('Importe') ?? '0'),
+            ));
+          }
+        }
 
-      double total = subTotal; 
+        // Procesar retenciones
+        var retencionesNode = impuestosNode.findElements('cfdi:Retenciones').firstOrNull;
+        if (retencionesNode != null) {
+          for (var retencion in retencionesNode.findElements('cfdi:Retencion')) {
+            retenciones.add(TipoImpuesto(
+              base: double.parse(retencion.getAttribute('Base') ?? '0'),
+              impuesto: retencion.getAttribute('Impuesto') ?? '',
+              tipoFactor: retencion.getAttribute('TipoFactor') ?? '',
+              tasaOCuota: double.parse(retencion.getAttribute('TasaOCuota') ?? '0'),
+              importe: double.parse(retencion.getAttribute('Importe') ?? '0'),
+            ));
+          }
+        }
+      }
+
+      double subTotal = double.parse(conceptoXml.getAttribute('Importe') ?? '0');
+      double descuento = double.parse(conceptoXml.getAttribute('Descuento') ?? '0');
       
-      for (var traslado in impuestos.traslado) {
-        total = total + traslado.importe;
-      }
-
-      for (var retencion in impuestos.retencion) {
-        total = total - retencion.importe;
-      }
+      // Calcular totales de impuestos
+      List<double> totalIVATrasladado = traslados
+          .where((t) => t.impuesto == '002')
+          .map((t) => t.importe)
+          .toList();
+      List<double> totalIEPSTrasladado = traslados
+          .where((t) => t.impuesto == '003')
+          .map((t) => t.importe)
+          .toList();
+      List<double> totalISRRetenido = retenciones
+          .where((t) => t.impuesto == '001')
+          .map((t) => t.importe)
+          .toList();
+      List<double> totalIVARetenido = retenciones
+          .where((t) => t.impuesto == '002')
+          .map((t) => t.importe)
+          .toList();
 
       conceptos.add(Concepto(
-        descripcion: descripcion,
+        descripcion: conceptoXml.getAttribute('Descripcion') ?? '',
         subTotal: subTotal,
         descuento: descuento,
-        total: total,
-        impuestos: impuestos,
-        impuestosPorcentaje: [],
-        impuestosTotal: [],
-        totalIVATrasladado: [],
-        totalISRRetenido: [],
-        totalIVARetenido: [],
-        totalIEPSTrasladado: [],
+        total: subTotal - descuento + 
+               (totalIVATrasladado.isEmpty ? 0 : totalIVATrasladado.reduce((a, b) => a + b)) +
+               (totalIEPSTrasladado.isEmpty ? 0 : totalIEPSTrasladado.reduce((a, b) => a + b)) -
+               (totalISRRetenido.isEmpty ? 0 : totalISRRetenido.reduce((a, b) => a + b)) -
+               (totalIVARetenido.isEmpty ? 0 : totalIVARetenido.reduce((a, b) => a + b)),
+        impuestos: Impuesto(
+          traslado: traslados,
+          retencion: retenciones,
+        ),
+        impuestosPorcentaje: traslados.map((t) => t.tasaOCuota).toList(),
+        impuestosTotal: traslados.map((t) => t.importe).toList(),
+        totalIVATrasladado: totalIVATrasladado,
+        totalIEPSTrasladado: totalIEPSTrasladado,
+        totalISRRetenido: totalISRRetenido,
+        totalIVARetenido: totalIVARetenido,
       ));
     }
 
-    // Crea el objeto Comprobante con los datos extraídos
     return Comprobante(
       fecha: fecha,
       serie: serie,
       folio: folio,
       uuid: uuid,
-      rfcEmisor: rfcEmisor,
-      nombreEmisor: nombreEmisor,
       rfcReceptor: rfcReceptor,
       nombreReceptor: nombreReceptor,
+      rfcEmisor: rfcEmisor,
+      nombreEmisor: nombreEmisor,
       moneda: moneda,
       conceptos: conceptos,
     );
+
   } catch (e) {
     if (kDebugMode) {
-      print('Error al parsear el XML: $e');
+      print('Error al procesar archivo XML: $e');
     }
     return null;
   }
-}
-
-// Función auxiliar para extraer impuestos de un concepto
-Impuesto _extractImpuestos(XmlElement conceptoNode) {
-  List<TipoImpuesto> traslados = [];
-  List<TipoImpuesto> retenciones = [];
-
-  // Buscar el nodo cfdi:Impuestos
-  final impuestosNode = conceptoNode.findElements('cfdi:Impuestos').isNotEmpty
-      ? conceptoNode.findElements('cfdi:Impuestos').first
-      : null;
-
-  if (impuestosNode != null) {
-    // Buscar y procesar los nodos cfdi:Traslados
-    final trasladosNode =
-        impuestosNode.findElements('cfdi:Traslados').isNotEmpty
-            ? impuestosNode.findElements('cfdi:Traslados').first
-            : null;
-
-    if (trasladosNode != null) {
-      final trasladosNodes = trasladosNode.findElements('cfdi:Traslado');
-      for (var trasladoNode in trasladosNodes) {
-        traslados.add(TipoImpuesto(
-          base: double.tryParse(trasladoNode.getAttribute('Base') ?? '') ?? 0.0,
-          impuesto: trasladoNode.getAttribute('Impuesto') ?? '',
-          tipoFactor: trasladoNode.getAttribute('TipoFactor') ?? '',
-          tasaOCuota:
-              double.tryParse(trasladoNode.getAttribute('TasaOCuota') ?? '') ??
-                  0.0,
-          importe:
-              double.tryParse(trasladoNode.getAttribute('Importe') ?? '') ??
-                  0.0,
-        ));
-      }
-    }
-
-    // Buscar y procesar los nodos cfdi:Retenciones
-    final retencionesNode =
-        impuestosNode.findElements('cfdi:Retenciones').isNotEmpty
-            ? impuestosNode.findElements('cfdi:Retenciones').first
-            : null;
-
-    if (retencionesNode != null) {
-      final retencionesNodes = retencionesNode.findElements('cfdi:Retencion');
-      for (var retencionNode in retencionesNodes) {
-        retenciones.add(TipoImpuesto(
-          base:
-              double.tryParse(retencionNode.getAttribute('Base') ?? '') ?? 0.0,
-          impuesto: retencionNode.getAttribute('Impuesto') ?? '',
-          tipoFactor: retencionNode.getAttribute('TipoFactor') ?? '',
-          tasaOCuota:
-              double.tryParse(retencionNode.getAttribute('TasaOCuota') ?? '') ??
-                  0.0,
-          importe:
-              double.tryParse(retencionNode.getAttribute('Importe') ?? '') ??
-                  0.0,
-        ));
-      }
-    }
-  }
-
-  return Impuesto(traslado: traslados, retencion: retenciones);
 }
