@@ -65,9 +65,9 @@ Future<String> createExcel(List<Comprobante> comprobantes,
         double total = 0;
         String tasaIVAPromedio = '';
 
-        // Concatenate all concepts with " || " separator
+        // Concatenate all concepts with semicolon separator for compact display
         String allConcepts =
-            data.conceptos.map((c) => c.descripcion).join(' || ');
+            data.conceptos.map((c) => c.descripcion).join('; ');
 
         // Calcular tasa de IVA promedio
         List<double> tasasIVA = [];
@@ -117,14 +117,23 @@ Future<String> createExcel(List<Comprobante> comprobantes,
         sheet.getRangeByIndex(currentRow, 9).setText(data.nombreReceptor);
         sheet.getRangeByIndex(currentRow, 10).setText(data.moneda);
         sheet.getRangeByIndex(currentRow, 11).setText(allConcepts);
+        // Desactivar explícitamente el wrapText
+        sheet.getRangeByIndex(currentRow, 11).cellStyle.wrapText = false;
         sheet.getRangeByIndex(currentRow, 12).setValue(totalSubtotal);
+        sheet.getRangeByIndex(currentRow, 12).numberFormat = '#,##0.00';
         sheet.getRangeByIndex(currentRow, 13).setValue(totalDescuento);
+        sheet.getRangeByIndex(currentRow, 13).numberFormat = '#,##0.00';
         sheet.getRangeByIndex(currentRow, 14).setValue(tasaIVAPromedio);
         sheet.getRangeByIndex(currentRow, 15).setValue(totalIVA);
+        sheet.getRangeByIndex(currentRow, 15).numberFormat = '#,##0.00';
         sheet.getRangeByIndex(currentRow, 16).setValue(totalIEPS);
+        sheet.getRangeByIndex(currentRow, 16).numberFormat = '#,##0.00';
         sheet.getRangeByIndex(currentRow, 17).setValue(totalISR);
+        sheet.getRangeByIndex(currentRow, 17).numberFormat = '#,##0.00';
         sheet.getRangeByIndex(currentRow, 18).setValue(totalIVARet);
+        sheet.getRangeByIndex(currentRow, 18).numberFormat = '#,##0.00';
         sheet.getRangeByIndex(currentRow, 19).setValue(total);
+        sheet.getRangeByIndex(currentRow, 19).numberFormat = '#,##0.00';
 
         currentRow += 2;
       } else {
@@ -178,24 +187,43 @@ Future<String> createExcel(List<Comprobante> comprobantes,
 
           // Agregar concepto
           sheet.getRangeByIndex(currentRow, 11).setText(concepto.descripcion);
+          // Desactivar explícitamente el wrapText
+          sheet.getRangeByIndex(currentRow, 11).cellStyle.wrapText = false;
           sheet.getRangeByIndex(currentRow, 12).setValue(concepto.subTotal);
+          sheet.getRangeByIndex(currentRow, 12).numberFormat = '#,##0.00';
           sheet
               .getRangeByIndex(currentRow, 13)
               .setValue(descuento > 0 ? descuento : null);
+          if (descuento > 0) {
+            sheet.getRangeByIndex(currentRow, 13).numberFormat = '#,##0.00';
+          }
           sheet.getRangeByIndex(currentRow, 14).setValue(tasaIVA);
           sheet
               .getRangeByIndex(currentRow, 15)
               .setValue(ivaTrasladado > 0 ? ivaTrasladado : null);
+          if (ivaTrasladado > 0) {
+            sheet.getRangeByIndex(currentRow, 15).numberFormat = '#,##0.00';
+          }
           sheet
               .getRangeByIndex(currentRow, 16)
               .setValue(iepsTrasladado > 0 ? iepsTrasladado : null);
+          if (iepsTrasladado > 0) {
+            sheet.getRangeByIndex(currentRow, 16).numberFormat = '#,##0.00';
+          }
           sheet
               .getRangeByIndex(currentRow, 17)
               .setValue(isrRetenido > 0 ? isrRetenido : null);
+          if (isrRetenido > 0) {
+            sheet.getRangeByIndex(currentRow, 17).numberFormat = '#,##0.00';
+          }
           sheet
               .getRangeByIndex(currentRow, 18)
               .setValue(ivaRetenido > 0 ? ivaRetenido : null);
+          if (ivaRetenido > 0) {
+            sheet.getRangeByIndex(currentRow, 18).numberFormat = '#,##0.00';
+          }
           sheet.getRangeByIndex(currentRow, 19).setValue(concepto.total);
+          sheet.getRangeByIndex(currentRow, 19).numberFormat = '#,##0.00';
 
           isFirstRow = false;
           currentRow++;
@@ -217,8 +245,8 @@ Future<String> createExcel(List<Comprobante> comprobantes,
   // Configurar formato de columnas
   for (var i = 1; i <= headers.length; i++) {
     if (i == 11) {
-      // Columna K (CONCEPTO)
-      sheet.getRangeByName('K1:K$currentRow').autoFit();
+      // Columna K (CONCEPTO) - ancho fijo de 18
+      sheet.getRangeByIndex(1, 11, 1, 11).columnWidth = 18;
     } else {
       sheet.autoFitColumn(i);
     }

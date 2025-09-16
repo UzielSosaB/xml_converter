@@ -2,7 +2,7 @@
 class AppConfig {
   // App information
   static const String appName = 'XML Converter';
-  static const String appVersion = 'v1.0';
+  static const String appVersion = 'v1.1';
 
   // Business information
   static const String companyName = 'Despacho Contable';
